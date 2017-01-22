@@ -56,21 +56,34 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
   /**
     * Appends the given messages to the `{persistenceKeyPath}/{persistenceId}/events/{seqNr}` path
     */
-  def asyncWriteMessages(messages: Seq[AtomicWrite]): Future[Seq[Try[Unit]]] =
+  def asyncWriteMessages(messages: Seq[AtomicWrite]): Future[Seq[Try[Unit]]] = {
+    def writeRepr(repr: PersistentRepr,
+                  persistenceId: String) =
+      FirebaseDatabase().write(
+        persistenceKeyPath,
+        persistenceId,
+        "events",
+        repr.sequenceNr.toString
+      )(FirebaseJournal.reprToJson(repr))
+        .map(_ => Success())
+
     Future.traverse(messages) {
-      case message if message.payload.size != 1 =>
-        throw new UnsupportedOperationException("persistAll is currently not supported in Firebase Journal")
-      case message =>
-        val repr =
-          message.payload.head
-        FirebaseDatabase().write(
-          persistenceKeyPath,
-          message.persistenceId,
-          "events",
-          repr.sequenceNr.toString
-        )(FirebaseJournal.reprToJson(repr))
-          .map(_ => Success())
+      message =>
+        val future =
+          Future.traverse(message.payload)(writeRepr(_, message.persistenceId))
+        future.onFailure {
+          case _ =>
+            import scala.concurrent.duration._
+            Await.result(
+              Future.traverse(message.payload.map(_.sequenceNr.toString))(
+                FirebaseDatabase().delete(persistenceKeyPath, message.persistenceId, "events", _)
+              ),
+              3.seconds
+            )
+        }
+        future.map(_ => Success())
     }
+  }
 
   /**
     * Deletes the relevant messages in the `{persistenceKeyPath}/{persistenceId}/events/` path

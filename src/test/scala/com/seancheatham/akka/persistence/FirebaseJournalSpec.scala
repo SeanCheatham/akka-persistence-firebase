@@ -13,9 +13,6 @@ class FirebaseJournalSpec extends JournalSpec(ConfigFactory.load()) {
   protected def supportsRejectingNonSerializableObjects: CapabilityFlag =
     false
 
-  override def supportsAtomicPersistAllOfSeveralEvents =
-    false
-
   private val persistenceKeyPath =
     config.getString("firebase-journal.base_key_path")
 
