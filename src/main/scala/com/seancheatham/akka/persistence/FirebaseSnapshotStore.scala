@@ -19,7 +19,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *
   * The configuration settings defined for this plugin are:
   * {
-  *   base_key_path = "infrastructure/akka/persistence"
+  * base_key_path = "infrastructure/akka/persistence"
   * }
   */
 class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
@@ -35,7 +35,7 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
 
   /**
     * The base path in within the context of Firebase to write Actor journals.  For example, events for persistence ID "X"
-    * will be written to `{persistenceKeyPath}/X/events`
+    * will be written to `{persistenceKeyPath}/X/snapshots`
     */
   val persistenceKeyPath: String =
     config.getString("base_key_path")
@@ -52,34 +52,40 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
   private implicit val serialization: Serialization =
     SerializationExtension(actorSystem)
 
-  // TODO: This is really ugly, because it will grab ALL snapshots from the database, and then filter them
-  // on the application-side.  If possible, find a way to retrieve just the child KEYS for the snapshots
+  /**
+    * A Firebase DB instance
+    */
+  private val db =
+    FirebaseDatabase()
+
   def loadAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Option[SelectedSnapshot]] =
-  FirebaseDatabase().getOpt(persistenceKeyPath, persistenceId, "snapshots")
-    .map(_.fold[Option[SelectedSnapshot]](None) {
-      snapshots =>
-        val validSnapshots =
-          snapshots.as[Map[String, SnapshotItem]]
-            .filter {
-              case (_, item) =>
-                item.n <= criteria.maxSequenceNr &&
-                  item.n >= criteria.minSequenceNr &&
-                  item.t <= criteria.maxTimestamp &&
-                  item.t >= criteria.minTimestamp
-            }
-        if (validSnapshots.nonEmpty) {
-          val latest =
-            validSnapshots.maxBy(_._1)._2
-          Some(
-            SelectedSnapshot(
-              latest.metadata(persistenceId),
-              latest.value
+    db.getOpt(persistenceKeyPath, persistenceId, "snapshots")
+      .map(_.fold[Option[SelectedSnapshot]](None) {
+        snapshots =>
+          // TODO: This is really ugly, because it will grab ALL snapshots from the database, and then filter them
+          // on the application-side.  If possible, find a way to retrieve just the child KEYS for the snapshots
+          val validSnapshots =
+            snapshots.as[Map[String, SnapshotItem]]
+              .filter {
+                case (_, item) =>
+                  item.n <= criteria.maxSequenceNr &&
+                    item.n >= criteria.minSequenceNr &&
+                    item.t <= criteria.maxTimestamp &&
+                    item.t >= criteria.minTimestamp
+              }
+          if (validSnapshots.nonEmpty) {
+            val latest =
+              validSnapshots.maxBy(_._1)._2
+            Some(
+              SelectedSnapshot(
+                latest.metadata(persistenceId),
+                latest.value
+              )
             )
-          )
-        } else {
-          None
-        }
-    })
+          } else {
+            None
+          }
+      })
 
   def saveAsync(metadata: SnapshotMetadata, snapshot: Any): Future[Unit] = {
     val persistenceId =
@@ -91,7 +97,7 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
       ) ++ anyToJson(snapshot)
     val key =
       metadata.sequenceNr + ":" + metadata.timestamp
-    FirebaseDatabase().write(persistenceKeyPath, persistenceId, "snapshots", key)(item)
+    db.write(persistenceKeyPath, persistenceId, "snapshots", key)(item)
       .map(_ => ())
   }
 
@@ -101,31 +107,30 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
     if (metadata.timestamp > 0) {
       val key =
         metadata.sequenceNr + ":" + metadata.timestamp
-      FirebaseDatabase().delete(persistenceKeyPath, persistenceId, "snapshots", key)
+      db.delete(persistenceKeyPath, persistenceId, "snapshots", key)
         .map(_ => ())
     } else {
       // TODO: This is really ugly, because it will grab ALL snapshots from the database, and then filter them
       // on the application-side.  If possible, find a way to retrieve just the child KEYS for the snapshots
-      FirebaseDatabase().getOpt(persistenceKeyPath, persistenceId, "snapshots")
+      db.getOpt(persistenceKeyPath, persistenceId, "snapshots")
         .map(_.fold(Future.successful())(snapshots =>
           Future.traverse(
             snapshots.as[Map[String, SnapshotItem]]
               .keysIterator
               .filter(_.startsWith(metadata.sequenceNr.toString))
-          )(FirebaseDatabase().delete(persistenceKeyPath, persistenceId, "snapshots", _))
+          )(db.delete(persistenceKeyPath, persistenceId, "snapshots", _))
             .map(_ => ())
         )
         )
     }
   }
-
-  // TODO: This is really ugly, because it will grab ALL snapshots from the database, and then filter them
-  // on the application-side.  If possible, find a way to retrieve just the child KEYS for the snapshots
-  def deleteAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] = {
-    FirebaseDatabase().getOpt(persistenceKeyPath, persistenceId, "snapshots")
+  def deleteAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] =
+    db.getOpt(persistenceKeyPath, persistenceId, "snapshots")
       .flatMap(
         _.fold(Future.successful())(snapshots =>
           Future.traverse(
+            // TODO: This is really ugly, because it will grab ALL snapshots from the database, and then filter them
+            // on the application-side.  If possible, find a way to retrieve just the child KEYS for the snapshots
             snapshots.as[Map[String, SnapshotItem]]
               .iterator
               .collect {
@@ -136,11 +141,10 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
                     item.t >= criteria.minTimestamp =>
                   id
               }
-          )(FirebaseDatabase().delete(persistenceKeyPath, persistenceId, "snapshots", _))
+          )(db.delete(persistenceKeyPath, persistenceId, "snapshots", _))
             .map(_ => ())
         )
       )
-  }
 }
 
 object FirebaseSnapshotStore {

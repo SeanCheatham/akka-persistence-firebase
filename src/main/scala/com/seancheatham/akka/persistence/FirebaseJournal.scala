@@ -25,7 +25,7 @@ import scala.util.{Success, Try}
   *
   * The configuration settings defined for this plugin are:
   * {
-  *   base_key_path = "infrastructure/akka/persistence"
+  * base_key_path = "infrastructure/akka/persistence"
   * }
   */
 class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLogging {
@@ -59,12 +59,18 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
     SerializationExtension(actorSystem)
 
   /**
+    * A Firebase DB instance
+    */
+  private val db =
+    FirebaseDatabase()
+
+  /**
     * Appends the given messages to the `{persistenceKeyPath}/{persistenceId}/events/{seqNr}` path
     */
   def asyncWriteMessages(messages: Seq[AtomicWrite]): Future[Seq[Try[Unit]]] = {
     def writeRepr(repr: PersistentRepr,
                   persistenceId: String) =
-      FirebaseDatabase().write(
+      db.write(
         persistenceKeyPath,
         persistenceId,
         "events",
@@ -81,7 +87,7 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
             import scala.concurrent.duration._
             Await.result(
               Future.traverse(message.payload.map(_.sequenceNr.toString))(
-                FirebaseDatabase().delete(persistenceKeyPath, message.persistenceId, "events", _)
+                db.delete(persistenceKeyPath, message.persistenceId, "events", _)
               ),
               3.seconds
             )
@@ -97,7 +103,7 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
     import scala.concurrent.duration._
     val messages =
       Await.result(
-        FirebaseDatabase().getCollection(persistenceKeyPath, persistenceId, "events"),
+        db.getCollection(persistenceKeyPath, persistenceId, "events"),
         10.seconds
       )
     Future.traverse(
@@ -127,7 +133,7 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
     import scala.concurrent.duration._
     val messages =
       Await.result(
-        FirebaseDatabase().getCollection(persistenceKeyPath, persistenceId, "events"),
+        db.getCollection(persistenceKeyPath, persistenceId, "events"),
         10.seconds
       )
     messages
@@ -157,7 +163,7 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
 
     import FirebaseDatabase.KeyHelper
 
-    FirebaseDatabase().database.getReference(
+    db.database.getReference(
       Seq(persistenceKeyPath, persistenceId, "events").keyify
     ).limitToLast(1)
       .addListenerForSingleValueEvent(

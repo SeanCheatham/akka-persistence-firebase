@@ -29,7 +29,7 @@ object Dependencies {
 
   val storage =
     Seq(
-      "com.seancheatham" %% "storage-firebase" % "0.0.2-SNAPSHOT"
+      "com.seancheatham" %% "storage-firebase" % "0.0.2"
     )
 
   val akka = {
