@@ -6,8 +6,8 @@ import akka.actor.{ActorLogging, ExtendedActorSystem}
 import akka.persistence.journal.AsyncWriteJournal
 import akka.persistence.{AtomicWrite, PersistentRepr}
 import akka.serialization.{Serialization, SerializationExtension}
-import com.google.common.io.BaseEncoding
 import com.google.firebase.database.{DataSnapshot, DatabaseError, ValueEventListener}
+import com.seancheatham.akka.persistence.FirebaseJournal.EventItem
 import com.seancheatham.storage.firebase.FirebaseDatabase
 import com.typesafe.config.Config
 import play.api.libs.json._
@@ -18,10 +18,15 @@ import scala.util.{Success, Try}
 
 /**
   * An Akka Persistence Journaling system which is backed by a Google Firebase instance.  Firebase provides several
-  * features, and among them are a Realtime Database.  Their database is document-based, meaning it is effectively
+  * features, and among them is a Realtime Database.  Their database is document-based, meaning it is effectively
   * modeled as a giant JSON object, thus allowing for an expressive way of interacting with it.  The true power, however,
   * comes from its "realtime"-ness.  Firebase is designed for high-performance reads and writes, as well as for listening
   * on real-time connections.  This makes it effective for Akka Journaling.
+  *
+  * The configuration settings defined for this plugin are:
+  * {
+  *   base_key_path = "infrastructure/akka/persistence"
+  * }
   */
 class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLogging {
 
@@ -64,7 +69,7 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
         persistenceId,
         "events",
         repr.sequenceNr.toString
-      )(FirebaseJournal.reprToJson(repr))
+      )(Json.toJson(EventItem(repr)))
         .map(_ => Success())
 
     Future.traverse(messages) {
@@ -133,7 +138,7 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
             i <= toSequenceNr &&
             replayedCount < max =>
           v.toOption
-            .map(FirebaseJournal.jsonToRepr(_, i, persistenceId))
+            .map(_.as[EventItem].repr(i, persistenceId))
             .foreach {
               replayedCount += 1
               recoveryCallback(_)
@@ -178,99 +183,94 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
 object FirebaseJournal {
 
   /**
-    * Converts an "Any" event to a JsObject
+    * Events get stored using this structure, however the field names are shortened when exporting to JSON,
+    * to save space and time.
     *
-    * @param event         The event to serialize
-    * @param serialization An implicit serialization from the actor system
-    * @return a JsObject with:
-    *         {
-    *         "t" -> "int" | "long" | "float" | "double" | "boolean" | "string" | Serialization ID,
-    *         "v" -> The Serialized Value
-    *         }
+    * @param manifest   @see [[akka.persistence.PersistentRepr#manifest]]
+    * @param deleted    @see [[akka.persistence.PersistentRepr#deleted]]
+    * @param sender     @see [[akka.persistence.PersistentRepr#sender]]
+    * @param writerUuid @see [[akka.persistence.PersistentRepr#writerUuid]]
+    * @param value      The serialized value of the Repr's payload.  If the value is a primitive, it'll be stored as a Json
+    *              primitive.  If the value is some sort of serializable object, the object gets serialized
+    *                   and then Base64 Encoded.
+    * @param valueType  A hint as to what the [[com.seancheatham.akka.persistence.FirebaseJournal.EventItem#value()]] is
     */
-  def eventToJson(event: Any)(implicit serialization: Serialization): JsObject = {
-    val (typeName, json) =
-      event match {
-        case i: Int => ("int", JsNumber(i))
-        case i: Long => ("long", JsNumber(i))
-        case i: Float => ("float", JsNumber(i.toDouble))
-        case i: Double => ("double", JsNumber(i))
-        case i: Boolean => ("boolean", JsBoolean(i))
-        case i: String => ("string", JsString(i))
-        case i: AnyRef =>
-          val serializer = serialization.findSerializerFor(i)
-          val serialized = BaseEncoding.base64().encode(serializer.toBinary(i))
-          (serializer.identifier.toString, JsString(serialized))
-      }
-    Json.obj("t" -> typeName, "v" -> json)
+  case class EventItem(manifest: String,
+                       deleted: Boolean,
+                       sender: Option[String],
+                       writerUuid: String,
+                       value: JsValue,
+                       valueType: String) {
+
+    /**
+      * Base64 decodes and deserializes this item's value
+      *
+      * @param serialization An Actor Serialization
+      * @return an Any, per deserialization rules
+      */
+    def value(implicit serialization: Serialization): Any =
+      serializedToAny(valueType, value)
+
+    /**
+      * Converts this EventItem into a Persistence Repr
+      *
+      * @param id            The [[akka.persistence.PersistentImpl#sequenceNr()]]
+      * @param persistenceId The [[akka.persistence.PersistentImpl#persistenceId()]]
+      * @param system        An implicit actor system, for deserializing
+      * @param serialization The actor's serialization
+      * @return a PersistenceRepr
+      */
+    def repr(id: Long,
+             persistenceId: String)(implicit system: ExtendedActorSystem,
+                                    serialization: Serialization): PersistentRepr =
+      PersistentRepr(serializedToAny(valueType, value), id, persistenceId, manifest, deleted, sender.map(system.provider.resolveActorRef).orNull, writerUuid)
+
   }
 
-  def reprToJson(repr: PersistentRepr)(implicit system: ExtendedActorSystem,
-                                       serialization: Serialization): JsObject = {
-    val payload =
-      eventToJson(repr.payload)
-    val manifest =
-      repr.manifest
-    val deleted =
-      if (repr.deleted) Some(true) else None
-    val sender =
-      Option(repr.sender).map(Serialization.serializedActorPath)
-    val writerUuid =
-      repr.writerUuid
-    payload ++
-      Json.obj(
-        "m" -> manifest,
-        "w" -> writerUuid
-      ) ++
-      JsObject(
-        Map[String, JsValue](
-          deleted.toSeq.map(v => "deleted" -> Json.toJson(v)) ++
-            sender.map(v => "s" -> Json.toJson(v)): _*
-        )
+  object EventItem {
+    def apply(repr: PersistentRepr)(implicit system: ExtendedActorSystem,
+                                    serialization: Serialization): EventItem = {
+      val (vt, v) =
+        anyToSerialized(repr.payload)
+      EventItem(
+        repr.manifest,
+        repr.deleted,
+        Option(repr.sender).map(Serialization.serializedActorPath),
+        repr.writerUuid,
+        v,
+        vt
       )
-  }
-
-  /**
-    * Reads a Json value into an "Any"
-    *
-    * @param v a JsObject with:
-    *          {
-    *          "t" -> "int" | "long" | "float" | "double" | "boolean" | "string" | Serialization ID,
-    *          "v" -> The Serialized Value
-    *          }
-    * @return The proper deserialized value
-    */
-  def jsonToEvent(v: JsValue)(implicit serialization: Serialization): Any = {
-    val (typeName, json) =
-      ((v \ "t").as[String], (v \ "v").get)
-    typeName match {
-      case "int" => json.as[Int]
-      case "long" => json.as[Long]
-      case "float" => json.as[Float]
-      case "double" => json.as[Double]
-      case "boolean" => json.as[Boolean]
-      case "string" => json.as[String]
-      case t =>
-        val decoded = BaseEncoding.base64().decode(json.as[String])
-        serialization.deserialize(decoded, t.toInt, None).get
     }
   }
 
-  /**
-    * Converts the given JSON representation of a Repr into a Repr
-    */
-  def jsonToRepr(v: JsValue,
-                 id: Long,
-                 persistenceId: String)(implicit system: ExtendedActorSystem,
-                                        serialization: Serialization): PersistentRepr =
-    PersistentRepr(
-      jsonToEvent(v),
-      id,
-      persistenceId,
-      (v \ "m").as[String],
-      (v \ "d").asOpt[Boolean].getOrElse(false),
-      (v \ "s").asOpt[String].map(system.provider.resolveActorRef).orNull,
-      (v \ "w").as[String]
+  implicit val format: Format[EventItem] =
+    Format[EventItem](
+      Reads[EventItem](v =>
+        JsSuccess(
+          EventItem(
+            (v \ "m").as[String],
+            (v \ "d").asOpt[Boolean].getOrElse[Boolean](false),
+            (v \ "s").asOpt[String],
+            (v \ "w").as[String],
+            (v \ "v").get,
+            (v \ "vt").as[String]
+          )
+        )
+      ),
+      Writes[EventItem] {
+        item =>
+          val objItems =
+            Map(
+              "m" -> Json.toJson(item.manifest),
+              "w" -> Json.toJson(item.writerUuid),
+              "v" -> Json.toJson(item.value),
+              "vt" -> Json.toJson(item.valueType)
+            ) ++
+              item.sender.map("s" -> JsString(_)) ++
+              (if (item.deleted) Seq("d" -> JsBoolean(true)) else Seq.empty)
+          JsObject(objItems)
+      }
     )
+  Json.format[EventItem]
 
 }
