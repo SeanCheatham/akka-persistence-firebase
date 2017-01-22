@@ -14,22 +14,22 @@ This library uses Typesafe's Play JSON library for serialization of content.  I 
 ```
 akka {
     persistence {
-        journal
-            plugin = "firebase-journal"
+        journal.plugin = "firebase-journal"
+        snapshot-store.plugin = "firebase-snapshot-store"
         }
     }
 }
 firebase-journal {
     class = "com.seancheatham.akka.persistence.FirebaseJournal"
-    plugin-dispatcher = "akka.actor.default-dispatcher"
     // Optional - base path within your Firebase Database to use as the journal storage
+    base_key_path = "infrastructure/akka/persistence"
+}
+firebase-snapshot-store {
+    class = "com.seancheatham.akka.persistence.FirebaseSnapshotStore"
     base_key_path = "infrastructure/akka/persistence"
 }
 firebase {
     url = "https://url-of-your-app.firebaseio.com/"
     service_account_key_location = "/path/to/service/account/key.json"
-}
-firebase-journal {
-  base_key_path = "infrastructure/akka/persistence"
 }
 ```
