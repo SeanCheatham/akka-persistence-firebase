@@ -17,6 +17,5 @@ lazy val firebasePersistence =
       libraryDependencies ++=
         Dependencies.akka ++
         Dependencies.playJson ++
-        Dependencies.storage,
-      parallelExecution in Test := false
+        Dependencies.storage
     )

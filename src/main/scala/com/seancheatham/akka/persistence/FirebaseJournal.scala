@@ -62,7 +62,7 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
     * A Firebase DB instance
     */
   private val db =
-    FirebaseDatabase()
+    FirebaseDatabase.fromConfig(config)
 
   /**
     * Appends the given messages to the `{persistenceKeyPath}/{persistenceId}/events/{seqNr}` path
@@ -100,25 +100,17 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
     * Deletes the relevant messages in the `{persistenceKeyPath}/{persistenceId}/events/` path
     */
   def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = {
-    import scala.concurrent.duration._
-    val messages =
-      Await.result(
-        db.getCollection(persistenceKeyPath, persistenceId, "events"),
-        10.seconds
+    db.getChildKeys(persistenceKeyPath, persistenceId, "events")
+      .map(
+        _.map(_.toLong)
+          .filter(_ <= toSequenceNr)
+          .map(_.toString)
+          .map(idx => db.merge(persistenceKeyPath, persistenceId, "events", idx, "d") _)
       )
-    Future.traverse(
-      messages.zipWithIndex
-        .collect {
-          case (_: JsObject, idx) if idx <= toSequenceNr =>
-            idx
-        }
-    )(idx =>
-      FirebaseDatabase()
-        .merge(persistenceKeyPath, persistenceId, "events", idx.toString, "d")(
-          JsBoolean(true)
-        )
-    )
-      .map(_ => ())
+      .flatMap(
+        Future.traverse(_)(_.apply(JsBoolean(true)))
+          .map(_ => ())
+      )
   }
 
   /**
@@ -129,29 +121,26 @@ class FirebaseJournal(config: Config) extends AsyncWriteJournal with ActorLoggin
                          (recoveryCallback: (PersistentRepr) => Unit): Future[Unit] = {
     var replayedCount = 0L
     import com.seancheatham.storage.firebase.FirebaseDatabase.JsHelper
-
-    import scala.concurrent.duration._
-    val messages =
-      Await.result(
-        db.getCollection(persistenceKeyPath, persistenceId, "events"),
-        10.seconds
+    db.getCollection(persistenceKeyPath, persistenceId, "events")
+      .map(
+        _.zipWithIndex
+          .collect {
+            case (v: JsObject, i) if i >= fromSequenceNr && i <= toSequenceNr =>
+              v -> i
+          }
       )
-    messages
-      .zipWithIndex
-      .foreach {
-        case (v: JsObject, i)
-          if i >= fromSequenceNr &&
-            i <= toSequenceNr &&
-            replayedCount < max =>
+      .map(messages =>
+        while (messages.hasNext && replayedCount < max) {
+          val (v, i) =
+            messages.next()
           v.toOption
             .map(_.as[EventItem].repr(i, persistenceId))
             .foreach {
               replayedCount += 1
               recoveryCallback(_)
             }
-        case _ =>
-      }
-    Future.successful()
+        }
+      )
   }
 
   /**

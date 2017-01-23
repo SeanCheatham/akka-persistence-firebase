@@ -56,10 +56,10 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
     * A Firebase DB instance
     */
   private val db =
-    FirebaseDatabase()
+    FirebaseDatabase.fromConfig(config)
 
   def loadAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Option[SelectedSnapshot]] =
-    db.getOpt(persistenceKeyPath, persistenceId, "snapshots")
+    db.lift(persistenceKeyPath, persistenceId, "snapshots")
       .map(_.fold[Option[SelectedSnapshot]](None) {
         snapshots =>
           // TODO: This is really ugly, because it will grab ALL snapshots from the database, and then filter them
@@ -112,7 +112,7 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
     } else {
       // TODO: This is really ugly, because it will grab ALL snapshots from the database, and then filter them
       // on the application-side.  If possible, find a way to retrieve just the child KEYS for the snapshots
-      db.getOpt(persistenceKeyPath, persistenceId, "snapshots")
+      db.lift(persistenceKeyPath, persistenceId, "snapshots")
         .map(_.fold(Future.successful())(snapshots =>
           Future.traverse(
             snapshots.as[Map[String, SnapshotItem]]
@@ -125,7 +125,7 @@ class FirebaseSnapshotStore(config: Config) extends SnapshotStore {
     }
   }
   def deleteAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] =
-    db.getOpt(persistenceKeyPath, persistenceId, "snapshots")
+    db.lift(persistenceKeyPath, persistenceId, "snapshots")
       .flatMap(
         _.fold(Future.successful())(snapshots =>
           Future.traverse(
