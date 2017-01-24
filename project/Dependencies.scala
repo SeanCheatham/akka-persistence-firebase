@@ -3,7 +3,7 @@ import sbt._
 object Dependencies {
 
   object versions {
-    val play = "2.5.10"
+    val play = "2.5.12"
   }
 
   val playJson =
@@ -29,7 +29,7 @@ object Dependencies {
 
   val storage =
     Seq(
-      "com.seancheatham" %% "storage-firebase" % "0.1.1"
+      "com.seancheatham" %% "storage-firebase" % "0.1.2"
     )
 
   val akka = {
