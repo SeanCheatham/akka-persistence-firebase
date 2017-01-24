@@ -20,8 +20,8 @@ object Publish {
       pomExtra :=
         <scm>
           <url>git@github.com:seancheatham/akka-persistence-firebase.git</url>
-          <connection>scm:git:git@github.com:akka-persistence-firebase.git</connection>
-          <developerConnection>scm:git:git@github.com:akka-persistence-firebase.git</developerConnection>
+          <connection>scm:git:git@github.com:seancheatham/akka-persistence-firebase.git</connection>
+          <developerConnection>scm:git:git@github.com:seancheatham/akka-persistence-firebase.git</developerConnection>
         </scm>
           <developers>
             <developer>
